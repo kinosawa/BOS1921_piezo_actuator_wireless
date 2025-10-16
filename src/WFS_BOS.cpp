@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include "BleControl.h"
 
 /* ================== BOS1921 addresses ================== */
 static const uint8_t BOS_ADDR      = 0x44;
@@ -173,6 +174,12 @@ float emaFreq = 150.0f;
 float emaPeriod = 500.0f;
 float lastAmp = -1.0f, lastFreq = -1.0f, lastPeriod = -1.0f;
 uint32_t lastUpdateMs = 0;
+bool remoteHasAmp = false;
+bool remoteHasFreq = false;
+bool remoteHasPeriod = false;
+uint32_t nextTapAt = 0;
+
+void onRemoteControlUpdate(const RemoteControlUpdate &update);
 
 float clampf(float x, float lo, float hi) { if (x < lo) return lo; if (x > hi) return hi; return x; }
 
@@ -194,9 +201,53 @@ void readPotsAndUpdateEMA() {
   freqH = clampf(freqH, FREQ_MIN,  FREQ_MAX);
   perMs = clampf(perMs, PERIOD_MIN_MS, PERIOD_MAX_MS);
 
-  emaAmp    = EMA_ALPHA * ampV  + (1.0f - EMA_ALPHA) * emaAmp;
-  emaFreq   = EMA_ALPHA * freqH + (1.0f - EMA_ALPHA) * emaFreq;
-  emaPeriod = EMA_ALPHA * perMs + (1.0f - EMA_ALPHA) * emaPeriod;
+  if (!remoteHasAmp) {
+    emaAmp = EMA_ALPHA * ampV + (1.0f - EMA_ALPHA) * emaAmp;
+  }
+  if (!remoteHasFreq) {
+    emaFreq = EMA_ALPHA * freqH + (1.0f - EMA_ALPHA) * emaFreq;
+  }
+  if (!remoteHasPeriod) {
+    emaPeriod = EMA_ALPHA * perMs + (1.0f - EMA_ALPHA) * emaPeriod;
+  }
+}
+
+void onRemoteControlUpdate(const RemoteControlUpdate &update) {
+  bool anyChange = false;
+  uint32_t now = millis();
+
+  if (update.hasAmplitude) {
+    float newAmp = clampf(update.amplitude, AMP_MIN_V, AMP_MAX_V);
+    if (fabs(newAmp - emaAmp) > 0.01f) {
+      anyChange = true;
+    }
+    emaAmp = newAmp;
+    remoteHasAmp = true;
+  }
+
+  if (update.hasFrequency) {
+    float newFreq = clampf(update.frequency, FREQ_MIN, FREQ_MAX);
+    if (fabs(newFreq - emaFreq) > 0.01f) {
+      anyChange = true;
+    }
+    emaFreq = newFreq;
+    remoteHasFreq = true;
+  }
+
+  if (update.hasPeriod) {
+    float newPeriod = clampf(update.period, PERIOD_MIN_MS, PERIOD_MAX_MS);
+    if (fabs(newPeriod - emaPeriod) > 0.01f) {
+      anyChange = true;
+    }
+    emaPeriod = newPeriod;
+    remoteHasPeriod = true;
+  }
+
+  if (anyChange) {
+    nextTapAt = now;
+  }
+
+  lastUpdateMs = now;
 }
 
 /* ================== Debug helpers ================== */
@@ -209,8 +260,6 @@ void printHex16(const char *label, uint16_t v) {
 }
 
 /* ================== Setup & Loop ================== */
-uint32_t nextTapAt = 0;
-
 void setup() {
   Serial.begin(115200);
   Wire.begin();
@@ -227,12 +276,15 @@ void setup() {
   analogReadResolution(12);
 #endif
 
+  BleControl_begin(onRemoteControlUpdate);
+
   nextTapAt = millis();
   Serial.println("Tap mode ready: A0=Amplitude, A1=Frequency, A2=Period.");
 }
 
 void loop() {
   uint32_t now = millis();
+  BleControl_poll();
   if (now - lastUpdateMs >= UPDATE_MIN_MS) {
     readPotsAndUpdateEMA();
     lastUpdateMs = now;
@@ -253,10 +305,8 @@ void loop() {
   }
 
   if ((int32_t)(now - nextTapAt) >= 0) {
-    //programAndStart_TAP(emaAmp, emaFreq, TAP_MS, HALF_CYCLE_TICK);
-    //nextTapAt = now + (uint32_t)emaPeriod;
-    programAndStart_TAP(70.0f, 250.0f, TAP_MS, HALF_CYCLE_TICK); //hardcoded amplitude for testing
-    nextTapAt = now + (uint32_t)100.0f; //hardcoded period for testing
+    programAndStart_TAP(emaAmp, emaFreq, TAP_MS, HALF_CYCLE_TICK);
+    nextTapAt = now + (uint32_t)emaPeriod;
   }
 
   delay(2);

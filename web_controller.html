@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BLE Dual Knobs → ESP32-S3</title>
+<style>
+:root { --bg:#0b0f14; --card:#121823; --accent:#6ee7ff; --muted:#a0aec0; --ring:#8b5cf6; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto; }
+body { margin:0; background:linear-gradient(180deg,#0a0f14,#0f1720); color:#e5e7eb; display:flex; min-height:100vh; align-items:center; justify-content:center; }
+.app { width:min(720px,94vw); padding:20px; border-radius:24px; background:rgba(17,24,39,.65); box-shadow: 0 10px 30px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.06); backdrop-filter: blur(12px); }
+.header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px;}
+h1 { font-size:20px; margin:0;}
+button { font-weight:600; padding:10px 14px; border:none; border-radius:12px; background:linear-gradient(180deg,#4ade80,#22d3ee); color:#0f172a; }
+button.disconnect { background:#334155; color:#e2e8f0; }
+.status { font-size:14px; color:var(--muted);} 
+.grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:24px; align-items:center; justify-items:center; }
+.knob-card { display:flex; flex-direction:column; align-items:center; gap:12px; }
+.knob { width:200px; height:200px; border-radius:50%; position:relative; background:radial-gradient(circle at 30% 30%, #1f2937 0%, #0b1220 60%); box-shadow: inset 0 6px 16px rgba(0,0,0,.8), inset 0 0 0 2px rgba(255,255,255,0.06); touch-action:none; }
+.knob .center { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:72%; height:72%; border-radius:50%; background:radial-gradient(circle at 50% 40%, #111827, #0b1020); box-shadow: inset 0 2px 12px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.04); }
+.knob .pointer { position:absolute; left:50%; top:50%; transform-origin: 50% 100%; width:6px; height:45%; transform: translate(-50%,-100%) rotate(0deg); background: linear-gradient(180deg,var(--accent),#22d3ee); border-radius:3px; box-shadow: 0 0 18px rgba(34,211,238,0.35); }
+.label { text-align:center; color:#cbd5e1; display:flex; flex-direction:column; gap:4px; }
+.value { font-size:32px; font-weight:700; letter-spacing:.5px;}
+.sub { font-size:12px; color:#94a3b8; }
+.footer { margin-top:14px; font-size:12px; color:#94a3b8; text-align:center;}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <h1>BLE Dual Knobs → ESP32‑S3</h1>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <div class="status" id="status">Disconnected</div>
+      <button id="connect">Connect</button>
+      <button id="disconnect" class="disconnect" style="display:none;">Disconnect</button>
+    </div>
+  </div>
+  <div class="grid">
+    <div class="knob-card">
+      <div class="knob" id="knobAmp">
+        <div class="center"></div>
+        <div class="pointer" id="pointerAmp"></div>
+      </div>
+      <div class="label">
+        <span>Amplitude</span>
+        <span class="value" id="valAmp">0</span>
+        <span class="sub">Range 0–120 Vpk</span>
+      </div>
+    </div>
+    <div class="knob-card">
+      <div class="knob" id="knobFreq">
+        <div class="center"></div>
+        <div class="pointer" id="pointerFreq"></div>
+      </div>
+      <div class="label">
+        <span>Frequency</span>
+        <span class="value" id="valFreq">10</span>
+        <span class="sub">Range 10–500 Hz</span>
+      </div>
+    </div>
+    <div class="knob-card">
+      <div class="knob" id="knobPeriod">
+        <div class="center"></div>
+        <div class="pointer" id="pointerPeriod"></div>
+      </div>
+      <div class="label">
+        <span>Period</span>
+        <span class="value" id="valPeriod">30</span>
+        <span class="sub">Range 30–1000 ms</span>
+      </div>
+    </div>
+  </div>
+  <div class="footer">Service UUID: 19b10000-e8f2-537e-4f6c-d104768a1214 • Char UUID: 19b10001-e8f2-537e-4f6c-d104768a1214 • Payload: 5 bytes → Amp:uint8 (0–120), Freq:uint16 LE (10–500), Period:uint16 LE (30–1000)</div>
+</div>
+<script>
+const SERVICE_UUID = '19b10000-e8f2-537e-4f6c-d104768a1214';
+const CHAR_UUID    = '19b10001-e8f2-537e-4f6c-d104768a1214';
+
+let device, server, service, characteristic;
+
+const ranges = {
+  amp: { min: 0,   max: 120 },
+  freq:{ min: 10,  max: 500 },
+  period: { min: 30,  max: 1000 }
+};
+
+const elementIds = {
+  amp:   { knob: 'knobAmp',   pointer: 'pointerAmp',   value: 'valAmp' },
+  freq:  { knob: 'knobFreq',  pointer: 'pointerFreq',  value: 'valFreq' },
+  period:{ knob: 'knobPeriod',pointer: 'pointerPeriod',value: 'valPeriod' }
+};
+
+const values = {
+  amp: ranges.amp.min,
+  freq: ranges.freq.min,
+  period: ranges.period.min
+};
+
+let sendTimer = null;
+
+const $ = id => document.getElementById(id);
+function setStatus(s){ $('status').textContent = s; }
+
+function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+function valueToNorm(which, value){
+  const r = ranges[which];
+  if (!r) return 0;
+  return (clamp(value, r.min, r.max) - r.min) / (r.max - r.min);
+}
+function normToValue(which, t){
+  const r = ranges[which];
+  if (!r) return 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.round(r.min + t * (r.max - r.min));
+}
+function normToAngle(t){
+  // 270° sweep: -135° .. +135°
+  return (t * 270) - 135;
+}
+function angleToNorm(ang){
+  while (ang > 180) ang -= 360;
+  while (ang < -180) ang += 360;
+  ang = Math.max(-135, Math.min(135, ang));
+  return (ang + 135) / 270; // 0..1
+}
+
+function updatePointer(which, t){
+  const config = elementIds[which];
+  if (!config) return;
+  const pointer = $(config.pointer);
+  if (!pointer) return;
+  const ang = normToAngle(t);
+  pointer.style.transform = `translate(-50%,-100%) rotate(${ang}deg)`;
+}
+
+function setKnob(which, value){
+  const range = ranges[which];
+  const config = elementIds[which];
+  if (!range || !config) return;
+  const clamped = Math.round(clamp(value, range.min, range.max));
+  const t = valueToNorm(which, clamped);
+  updatePointer(which, t);
+  values[which] = clamped;
+  const valueEl = $(config.value);
+  if (valueEl) valueEl.textContent = clamped;
+  scheduleSend();
+}
+
+function pointerAngle(ev, el){
+  const r = el.getBoundingClientRect();
+  const cx = r.left + r.width/2;
+  const cy = r.top + r.height/2;
+  const x = (ev.touches ? ev.touches[0].clientX : ev.clientX) - cx;
+  const y = (ev.touches ? ev.touches[0].clientY : ev.clientY) - cy;
+  return Math.atan2(y, x) * 180 / Math.PI;
+}
+
+function bindKnob(which){
+  const config = elementIds[which];
+  if (!config) return;
+  const el = $(config.knob);
+  if (!el) return;
+  let tracking = false;
+  const move = (ev)=>{
+    if (!tracking) return;
+    ev.preventDefault();
+    const ang = pointerAngle(ev, el);
+    const t = angleToNorm(ang);
+    const v = normToValue(which, t);
+    setKnob(which, v);
+  };
+  el.addEventListener('pointerdown', ev => { tracking = true; el.setPointerCapture(ev.pointerId); move(ev); }, {passive:false});
+  el.addEventListener('pointermove', move, {passive:false});
+  el.addEventListener('pointerup',   ev => { tracking = false; try{el.releasePointerCapture(ev.pointerId);}catch{} }, {passive:false});
+  // touch fallbacks
+  el.addEventListener('touchstart', ev => { tracking = true; move(ev); }, {passive:false});
+  el.addEventListener('touchmove', move, {passive:false});
+  el.addEventListener('touchend', () => tracking = false, {passive:false});
+}
+
+function scheduleSend(){
+  if (!characteristic) return;
+  if (sendTimer) return; // debounce ~25ms
+  sendTimer = setTimeout(async () => {
+    sendTimer = null;
+    // Payload: [amp:uint8, freq:uint16 LE, period:uint16 LE]
+    const amp = values.amp & 0xFF;
+    const freq = values.freq & 0xFFFF;
+    const period = values.period & 0xFFFF;
+    const data = new Uint8Array([
+      amp,
+      freq & 0xFF,
+      (freq >> 8) & 0xFF,
+      period & 0xFF,
+      (period >> 8) & 0xFF
+    ]);
+    try {
+      if (characteristic.properties.writeWithoutResponse) {
+        await characteristic.writeValueWithoutResponse(data);
+      } else {
+        await characteristic.writeValue(data);
+      }
+    } catch (e) {
+      console.warn('BLE write failed:', e);
+      setStatus('Write failed — reconnect?');
+    }
+  }, 25);
+}
+
+$('connect').addEventListener('click', async ()=>{
+  try{
+    if (!navigator.bluetooth) {
+      alert('Web Bluetooth not available in this browser. On iPhone, open this page in Bluefy or WebBLE.');
+      return;
+    }
+    setStatus('Scanning…');
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE_UUID] }] });
+    device.addEventListener('gattserverdisconnected', () => {
+      setStatus('Disconnected');
+      $('connect').style.display='';
+      $('disconnect').style.display='none';
+      characteristic = null;
+    });
+    setStatus('Connecting…');
+    server = await device.gatt.connect();
+    service = await server.getPrimaryService(SERVICE_UUID);
+    characteristic = await service.getCharacteristic(CHAR_UUID);
+    setStatus('Connected to ' + (device.name || 'device'));
+    $('connect').style.display='none';
+    $('disconnect').style.display='';
+    // send initial values
+    scheduleSend();
+  }catch(e){
+    console.error(e);
+    setStatus('Failed: ' + e.message);
+  }
+});
+
+$('disconnect').addEventListener('click', async ()=>{
+  try { if (device?.gatt?.connected) await device.gatt.disconnect(); } catch {}
+});
+
+// Init
+setKnob('amp', ranges.amp.min);
+setKnob('freq', ranges.freq.min);
+setKnob('period', ranges.period.min);
+bindKnob('amp');
+bindKnob('freq');
+bindKnob('period');
+</script>
+</body>
+</html>
