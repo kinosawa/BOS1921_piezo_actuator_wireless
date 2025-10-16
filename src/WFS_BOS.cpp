@@ -1,6 +1,5 @@
+#include <Arduino.h>
 #include <Wire.h>
-
-#define ARDUINO_ARCH_ESP32
 
 /* ================== BOS1921 addresses ================== */
 static const uint8_t BOS_ADDR      = 0x44;
@@ -254,8 +253,10 @@ void loop() {
   }
 
   if ((int32_t)(now - nextTapAt) >= 0) {
-    programAndStart_TAP(emaAmp, emaFreq, TAP_MS, HALF_CYCLE_TICK);
-    nextTapAt = now + (uint32_t)emaPeriod;
+    //programAndStart_TAP(emaAmp, emaFreq, TAP_MS, HALF_CYCLE_TICK);
+    //nextTapAt = now + (uint32_t)emaPeriod;
+    programAndStart_TAP(70.0f, 250.0f, TAP_MS, HALF_CYCLE_TICK); //hardcoded amplitude for testing
+    nextTapAt = now + (uint32_t)100.0f; //hardcoded period for testing
   }
 
   delay(2);
