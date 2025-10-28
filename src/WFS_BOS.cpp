@@ -56,7 +56,7 @@ void bleLedSetState(bool on) {
   if (BLE_LED_PIN < 0) {
     return;
   }
-  digitalWrite(BLE_LED_PIN, on ? HIGH : LOW);
+  digitalWrite(BLE_LED_PIN, on ? LOW : HIGH);  // active-low: LOW = LED on
 }
 
 void bleLedOff() { bleLedSetState(false); }
