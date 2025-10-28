@@ -16,10 +16,15 @@ static const uint8_t REG_CHIP_ID   = 0x1E;  // expect 0x3781
 #define FREQ_POT_PIN  A1   // frequency (10..500 Hz)
 #define PERIOD_POT_PIN A2  // new: controls tap period
 
+static const bool  FORCE_TEST_PARAMS = false;   // true → ignore pots/BLE and drive fixed test parameters
+static const float TEST_AMP_VPK      = 55.0f;
+static const float TEST_FREQ_HZ      = 150.0f;
+static const float TEST_PERIOD_MS    = 50.0f;
+
 /* ===== Tap behavior (tweak ranges here) ===== */
-static const float  TAP_MS          = 20.0f;     // duration of each tap in milliseconds
+static const float  TAP_MS          = 50.0f;     // duration of each tap in milliseconds
 static const bool   HALF_CYCLE_TICK = false;     // true → single half-cycle "tick"
-static const float  PERIOD_MIN_MS   = 30.0f;     // pot min = 50 ms
+static const float  PERIOD_MIN_MS   = 50.0f;     // pot min = 50 ms
 static const float  PERIOD_MAX_MS   = 1000.0f;   // pot max = 2000 ms
 
 // Desired UI ranges
@@ -169,9 +174,9 @@ void programAndStart_TAP(float vpk, float hz, float tap_ms = 20.0f, bool halfCyc
 }
 
 /* ================== Pots → params ================== */
-float emaAmp = 30.0f;
-float emaFreq = 150.0f;
-float emaPeriod = 500.0f;
+float emaAmp = FORCE_TEST_PARAMS ? TEST_AMP_VPK : 30.0f;
+float emaFreq = FORCE_TEST_PARAMS ? TEST_FREQ_HZ : 150.0f;
+float emaPeriod = FORCE_TEST_PARAMS ? TEST_PERIOD_MS : 500.0f;
 float lastAmp = -1.0f, lastFreq = -1.0f, lastPeriod = -1.0f;
 uint32_t lastUpdateMs = 0;
 bool remoteHasAmp = false;
@@ -184,6 +189,9 @@ void onRemoteControlUpdate(const RemoteControlUpdate &update);
 float clampf(float x, float lo, float hi) { if (x < lo) return lo; if (x > hi) return hi; return x; }
 
 void readPotsAndUpdateEMA() {
+  if (FORCE_TEST_PARAMS) {
+    return;
+  }
 #if defined(ARDUINO_ARCH_ESP32)
   const int ADC_MAX = 4095;
 #else
@@ -213,6 +221,9 @@ void readPotsAndUpdateEMA() {
 }
 
 void onRemoteControlUpdate(const RemoteControlUpdate &update) {
+  if (FORCE_TEST_PARAMS) {
+    return;
+  }
   bool anyChange = false;
   uint32_t now = millis();
 
@@ -285,7 +296,12 @@ void setup() {
 void loop() {
   uint32_t now = millis();
   BleControl_poll();
-  if (now - lastUpdateMs >= UPDATE_MIN_MS) {
+  if (FORCE_TEST_PARAMS) {
+    emaAmp = TEST_AMP_VPK;
+    emaFreq = TEST_FREQ_HZ;
+    emaPeriod = TEST_PERIOD_MS;
+    lastUpdateMs = now;
+  } else if (now - lastUpdateMs >= UPDATE_MIN_MS) {
     readPotsAndUpdateEMA();
     lastUpdateMs = now;
 
@@ -301,6 +317,21 @@ void loop() {
       lastAmp = emaAmp;
       lastFreq = emaFreq;
       lastPeriod = emaPeriod;
+    }
+  }
+
+  if (FORCE_TEST_PARAMS) {
+    bool ampChanged    = (lastAmp  < 0) || (fabs(TEST_AMP_VPK    - lastAmp)    > AMP_STEP_V);
+    bool freqChanged   = (lastFreq < 0) || (fabs(TEST_FREQ_HZ   - lastFreq)   > FREQ_STEP_HZ);
+    bool periodChanged = (lastPeriod < 0) || (fabs(TEST_PERIOD_MS - lastPeriod) > 20.0f);
+    if (ampChanged || freqChanged || periodChanged) {
+      Serial.print("→ Amp "); Serial.print(TEST_AMP_VPK, 1);
+      Serial.print(" Vpk, Freq "); Serial.print(TEST_FREQ_HZ, 1);
+      Serial.print(" Hz, Period "); Serial.print(TEST_PERIOD_MS, 0);
+      Serial.println(" ms");
+      lastAmp = TEST_AMP_VPK;
+      lastFreq = TEST_FREQ_HZ;
+      lastPeriod = TEST_PERIOD_MS;
     }
   }
 
