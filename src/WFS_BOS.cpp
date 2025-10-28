@@ -2,6 +2,8 @@
 #include <Wire.h>
 #include "BleControl.h"
 
+#define BLE_LED_HAS_RGB 0
+
 /* ================== BOS1921 addresses ================== */
 static const uint8_t BOS_ADDR      = 0x44;
 static const uint8_t REG_REFERENCE = 0x00;  // WFS commands / RAM ACCESS / FIFO
@@ -29,17 +31,66 @@ static const float  PERIOD_MAX_MS   = 1000.0f;   // pot max = 2000 ms
 
 // Desired UI ranges
 static const float AMP_MIN_V = 0.0f;
-static const float AMP_MAX_V = 120.0f;
+static const float AMP_MAX_V = 60.0f;
 static const float FREQ_MIN  = 10.0f;   // Hz
-static const float FREQ_MAX  = 500.0f;  // Hz
+static const float FREQ_MAX  = 250.0f;  // Hz
 
 // Update policy (when to accept new pot values)
 static const float AMP_STEP_V   = 5.0f;     // reprogram if amplitude changes > 5 V
 static const float FREQ_STEP_HZ = 10.0f;    // reprogram if frequency changes > 10 Hz
-static const uint32_t UPDATE_MIN_MS = 50;   // don’t re-read too often
+static const uint32_t UPDATE_MIN_MS = 30;   // don’t re-read too often
 
 // Smoothing (EMA) for pots
 static const float EMA_ALPHA = 0.25f;     // 0..1 (higher = snappier)
+
+/* ================== BLE status LED ================== */
+#if defined(LED_BUILTIN)
+static const int BLE_LED_PIN = LED_BUILTIN;
+#else
+static const int BLE_LED_PIN = -1;
+#endif
+
+static const uint16_t BLE_LED_ADVERTISING_PERIOD_MS = 400;
+
+void bleLedSetState(bool on) {
+  if (BLE_LED_PIN < 0) {
+    return;
+  }
+  digitalWrite(BLE_LED_PIN, on ? HIGH : LOW);
+}
+
+void bleLedOff() { bleLedSetState(false); }
+
+static bool bleLedPrevConnected = false;
+static bool bleLedBlinkState = false;
+static uint32_t bleLedNextToggle = 0;
+
+void updateBleStatusLed() {
+  if (BLE_LED_PIN < 0) {
+    return;
+  }
+  bool connected = BleControl_isConnected();
+  uint32_t now = millis();
+
+  if (connected != bleLedPrevConnected) {
+    bleLedPrevConnected = connected;
+    if (connected) {
+      bleLedSetState(true);          // solid on when connected
+    } else {
+      bleLedBlinkState = false;
+      bleLedNextToggle = now;
+      bleLedOff();
+    }
+  }
+
+  if (!connected) {
+    if ((int32_t)(now - bleLedNextToggle) >= 0) {
+      bleLedNextToggle = now + BLE_LED_ADVERTISING_PERIOD_MS;
+      bleLedBlinkState = !bleLedBlinkState;
+      bleLedSetState(bleLedBlinkState);  // blink while advertising
+    }
+  }
+}
 
 /* ================== I2C helpers ================== */
 void writeReg16(uint8_t reg, uint16_t val) {
@@ -277,6 +328,11 @@ void setup() {
   Wire.setClock(100000);
   delay(5);
 
+#if (BLE_LED_PIN >= 0) && !BLE_LED_HAS_RGB
+  pinMode(BLE_LED_PIN, OUTPUT);
+#endif
+  bleLedOff();
+
   writeReg16(REG_CONFIG, 0x0000);
   delayMicroseconds(50);
 
@@ -296,6 +352,7 @@ void setup() {
 void loop() {
   uint32_t now = millis();
   BleControl_poll();
+  updateBleStatusLed();
   if (FORCE_TEST_PARAMS) {
     emaAmp = TEST_AMP_VPK;
     emaFreq = TEST_FREQ_HZ;
